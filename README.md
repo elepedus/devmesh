@@ -225,17 +225,19 @@ Add `req` to `mix.exs` deps:
 {:req, "~> 0.5"}
 ```
 
-#### 1. Configure the endpoint for Unix sockets
+#### 1. Configure the endpoint
 
-In `config/dev.exs`, change the `http:` line to bind to a Unix socket:
+In `config/dev.exs`, keep the default TCP port binding (this is the fallback when Caddy isn't running):
 
 ```elixir
 config :my_app, MyAppWeb.Endpoint,
-  http: [ip: {:local, "/tmp/caddy-dev/my-app.sock"}, port: 0],
+  http: [ip: {127, 0, 0, 1}, port: 4000],
   ...
 ```
 
-In `config/runtime.exs`, ensure the `http: [port: ...]` line is inside the `if config_env() == :prod` block so it doesn't override the socket config in dev.
+Use a unique port per project to avoid conflicts (e.g., 4000, 4001, 4002...).
+
+In `config/runtime.exs`, ensure the `http: [port: ...]` line is inside the `if config_env() == :prod` block so it doesn't override the dev config.
 
 #### 2. Create `lib/my_app/dev_proxy.ex`
 
@@ -249,6 +251,9 @@ defmodule MyApp.DevProxy do
   @caddy_admin "http://localhost:2019"
   @route_id "my-app"
   @sock_path "/tmp/caddy-dev/my-app.sock"
+  @otp_app :my_app
+  @endpoint MyAppWeb.Endpoint
+  @fallback_port 4000
 
   def start_link(_opts), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
 
@@ -258,12 +263,13 @@ defmodule MyApp.DevProxy do
       {:ok, domain} ->
         cleanup_socket()
         deregister()
+        configure_socket()
         register(domain)
         Logger.info("dev-mesh: https://#{@route_id}.#{domain}")
         {:ok, %{domain: domain}}
 
       :error ->
-        Logger.warning("dev-mesh: Caddy not available, skipping registration")
+        Logger.info("dev-mesh: Caddy not available, using http://localhost:#{@fallback_port}")
         {:ok, %{domain: nil}}
     end
   end
@@ -274,6 +280,12 @@ defmodule MyApp.DevProxy do
     :ok
   end
   def terminate(_, _), do: :ok
+
+  defp configure_socket do
+    config = Application.get_env(@otp_app, @endpoint)
+    updated = Keyword.put(config, :http, ip: {:local, @sock_path}, port: 0)
+    Application.put_env(@otp_app, @endpoint, updated)
+  end
 
   defp discover_domain do
     case Req.get("#{@caddy_admin}/config/apps/tls/", receive_timeout: 2000) do
@@ -326,8 +338,8 @@ children =
 
 The integration:
 - Auto-discovers the domain from Caddy's TLS config
-- Deregisters any stale route, then registers a fresh one
-- If Caddy isn't available, the app still starts (socket works locally, just no HTTPS route)
+- If Caddy is available: switches endpoint to Unix socket, registers HTTPS route
+- If Caddy isn't available: leaves TCP port config alone, app works at `http://localhost:PORT`
 - Deregisters on clean shutdown
 
 ### Other frameworks
