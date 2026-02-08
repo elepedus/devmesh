@@ -184,12 +184,19 @@ sudo launchctl bootstrap system /Library/LaunchDaemons/com.caddyserver.caddy.pli
 The dashboard provides an always-on status page at `dev-mesh.dev.yourdomain.com` showing registered services, upstream health, and TLS status. It runs as a dedicated unprivileged user.
 
 ```bash
-# Create a system user for the dashboard
+# Create a system user for the dashboard (pick an unused UID/GID —
+# check with `dscl . -list /Users UniqueID | sort -nk2` first;
+# 399 may collide with com.apple.access_ssh on some systems)
 sudo dscl . -create /Users/_devmesh UniqueID 399
 sudo dscl . -create /Users/_devmesh PrimaryGroupID 399
 sudo dscl . -create /Users/_devmesh UserShell /usr/bin/false
 sudo dscl . -create /Users/_devmesh NFSHomeDirectory /var/empty
 sudo dscl . -create /Groups/_devmesh PrimaryGroupID 399
+
+# Create the log file with correct ownership (the _devmesh user
+# cannot create files in /var/log/caddy/)
+sudo touch /var/log/caddy/dashboard.log
+sudo chown _devmesh /var/log/caddy/dashboard.log
 
 # Install the dashboard script
 sudo mkdir -p /usr/local/etc/devmesh
@@ -212,25 +219,125 @@ Open `https://dev-mesh.dev.yourdomain.com` to see the dashboard.
 
 ### Phoenix/Elixir
 
-Add to `mix.exs`:
+Add `req` to `mix.exs` deps:
 
 ```elixir
-{:req, "~> 0.5", only: :dev}
+{:req, "~> 0.5"}
 ```
 
-Create `lib/my_app/dev_proxy.ex` — see [elixir-integration.md](docs/elixir-integration.md) for the full module.
+#### 1. Configure the endpoint for Unix sockets
+
+In `config/dev.exs`, change the `http:` line to bind to a Unix socket:
+
+```elixir
+config :my_app, MyAppWeb.Endpoint,
+  http: [ip: {:local, "/tmp/caddy-dev/my-app.sock"}, port: 0],
+  ...
+```
+
+In `config/runtime.exs`, ensure the `http: [port: ...]` line is inside the `if config_env() == :prod` block so it doesn't override the socket config in dev.
+
+#### 2. Create `lib/my_app/dev_proxy.ex`
+
+A GenServer that auto-registers with Caddy on startup and deregisters on shutdown:
+
+```elixir
+defmodule MyApp.DevProxy do
+  use GenServer
+  require Logger
+
+  @caddy_admin "http://localhost:2019"
+  @route_id "my-app"
+  @sock_path "/tmp/caddy-dev/my-app.sock"
+
+  def start_link(_opts), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
+
+  @impl true
+  def init(_) do
+    case discover_domain() do
+      {:ok, domain} ->
+        cleanup_socket()
+        deregister()
+        register(domain)
+        Logger.info("dev-mesh: https://#{@route_id}.#{domain}")
+        {:ok, %{domain: domain}}
+
+      :error ->
+        Logger.warning("dev-mesh: Caddy not available, skipping registration")
+        {:ok, %{domain: nil}}
+    end
+  end
+
+  @impl true
+  def terminate(_reason, %{domain: domain}) when is_binary(domain) do
+    deregister()
+    :ok
+  end
+  def terminate(_, _), do: :ok
+
+  defp discover_domain do
+    case Req.get("#{@caddy_admin}/config/apps/tls/", receive_timeout: 2000) do
+      {:ok, %{status: 200, body: body}} ->
+        subjects = get_in(body, ["certificates", "automate"]) || []
+        case Enum.find(subjects, &String.starts_with?(&1, "*.")) do
+          "*." <> domain -> {:ok, domain}
+          _ -> :error
+        end
+      _ -> :error
+    end
+  end
+
+  defp cleanup_socket, do: File.rm(@sock_path)
+
+  defp register(domain) do
+    Req.post("#{@caddy_admin}/config/apps/http/servers/srv0/routes",
+      json: %{
+        "@id" => @route_id,
+        "match" => [%{"host" => ["#{@route_id}.#{domain}"]}],
+        "handle" => [%{
+          "handler" => "reverse_proxy",
+          "upstreams" => [%{"dial" => "unix/#{@sock_path}"}]
+        }]
+      }
+    )
+  end
+
+  defp deregister do
+    Req.delete("#{@caddy_admin}/id/#{@route_id}")
+  rescue
+    _ -> :ok
+  end
+end
+```
+
+#### 3. Add to supervision tree
+
+In `lib/my_app/application.ex`, add `DevProxy` before the Endpoint (dev only):
+
+```elixir
+children =
+  [
+    MyAppWeb.Telemetry,
+    {Phoenix.PubSub, name: MyApp.PubSub}
+  ] ++
+    if(Mix.env() == :dev, do: [MyApp.DevProxy], else: []) ++
+    [MyAppWeb.Endpoint]
+```
 
 The integration:
-- Checks if Caddy is available on startup
-- If yes: binds to Unix socket, registers route, logs the URL
-- If no: falls back to standard port binding
-- Deregisters on shutdown
+- Auto-discovers the domain from Caddy's TLS config
+- Deregisters any stale route, then registers a fresh one
+- If Caddy isn't available, the app still starts (socket works locally, just no HTTPS route)
+- Deregisters on clean shutdown
 
 ### Other frameworks
 
 The registration API is simple HTTP:
 
 ```bash
+# Deregister any stale route first (ignore errors if none exists)
+curl -sf -X DELETE "http://localhost:2019/id/myapp-feature" || true
+
 # Register
 curl -X POST "http://localhost:2019/config/apps/http/servers/srv0/routes" \
   -H "Content-Type: application/json" \
@@ -243,9 +350,11 @@ curl -X POST "http://localhost:2019/config/apps/http/servers/srv0/routes" \
     }]
   }'
 
-# Deregister
+# Deregister (on shutdown)
 curl -X DELETE "http://localhost:2019/id/myapp-feature"
 ```
+
+**Important:** Always DELETE before POST on startup. If your service crashes or is killed without deregistering, the stale route remains in Caddy. A bare POST creates a duplicate.
 
 Bind your service to `/tmp/caddy-dev/{name}.sock` instead of a port. Most frameworks support Unix sockets:
 
@@ -286,6 +395,9 @@ Ensure `caddy trust` was run. Check that the Cloudflare token has DNS edit permi
 
 **502 Bad Gateway**
 Socket path mismatch. Verify the `dial` path in Caddy matches where your service is listening.
+
+**Duplicate routes in Caddy**
+A service that crashes or is killed without deregistering leaves a stale route. If it restarts and POSTs a new route without first DELETEing the old one, you get duplicates. Always DELETE by `@id` before POSTing on startup. Remove a duplicate manually: `curl -s http://localhost:2019/config/apps/http/servers/srv0/routes | python3 -m json.tool` to find the index, then `curl -X DELETE http://localhost:2019/config/apps/http/servers/srv0/routes/{index}`.
 
 **Stale socket**
 `rm /tmp/caddy-dev/*.sock` — crashed processes can leave these behind.
