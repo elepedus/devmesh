@@ -228,14 +228,56 @@ Open `https://dev-mesh.dev.yourdomain.com` to see the dashboard.
 
 ### Phoenix/Elixir
 
-Add `req` and `tidewave` to `mix.exs` deps:
+This repo includes a `dev_mesh` Elixir package that handles all the Caddy integration automatically.
+
+#### 1. Add dependencies
 
 ```elixir
-{:req, "~> 0.5"},
-{:tidewave, "~> 0.5", only: [:dev]}
+# mix.exs
+{:dev_mesh, github: "elepedus/dev-mesh", only: :dev},
+{:tidewave, "~> 0.5", only: :dev}
 ```
 
-#### 1. Configure the endpoint
+#### 2. Create `lib/my_app/dev_proxy.ex`
+
+```elixir
+defmodule MyApp.DevProxy do
+  use DevMesh,
+    route_id: "my-app",
+    otp_app: :my_app,
+    endpoint: MyAppWeb.Endpoint,
+    fallback_port: 4000
+end
+```
+
+Options:
+
+| Option | Required | Default | Description |
+|--------|----------|---------|-------------|
+| `route_id` | yes | | Subdomain identifier (e.g. `"my-app"`) |
+| `otp_app` | yes | | Application atom (e.g. `:my_app`) |
+| `endpoint` | yes | | Phoenix Endpoint module |
+| `fallback_port` | yes | | TCP port when Caddy is unavailable |
+| `tidewave` | no | `true` | Enable Tidewave Web proxy on port 9833 |
+| `caddy_admin` | no | `"http://localhost:2019"` | Caddy admin API URL |
+| `sock_dir` | no | `"/tmp/caddy-dev"` | Unix socket directory |
+| `tidewave_upstream` | no | `"localhost:9832"` | Tidewave Web address |
+
+#### 3. Add to supervision tree
+
+In `lib/my_app/application.ex`, add `DevProxy` before the Endpoint:
+
+```elixir
+children =
+  [
+    MyAppWeb.Telemetry,
+    {Phoenix.PubSub, name: MyApp.PubSub}
+  ] ++
+    DevMesh.children(MyApp.DevProxy) ++
+    [MyAppWeb.Endpoint]
+```
+
+#### 4. Configure the endpoint
 
 In `config/dev.exs`, keep the default TCP port binding (this is the fallback when Caddy isn't running):
 
@@ -248,151 +290,6 @@ config :my_app, MyAppWeb.Endpoint,
 Use a unique port per project to avoid conflicts (e.g., 4000, 4001, 4002...).
 
 In `config/runtime.exs`, ensure the `http: [port: ...]` line is inside the `if config_env() == :prod` block so it doesn't override the dev config.
-
-#### 2. Create `lib/my_app/dev_proxy.ex`
-
-A GenServer that auto-registers with Caddy on startup and deregisters on shutdown:
-
-```elixir
-defmodule MyApp.DevProxy do
-  use GenServer
-  require Logger
-
-  @caddy_admin "http://localhost:2019"
-  @route_id "my-app"
-  @sock_path "/tmp/caddy-dev/my-app.sock"
-  @otp_app :my_app
-  @endpoint MyAppWeb.Endpoint
-  @fallback_port 4000
-  @tidewave_route_id "tidewave-my-app"
-  @tidewave_upstream "localhost:9832"
-
-  def start_link(_opts), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
-
-  @impl true
-  def init(_) do
-    case discover_domain() do
-      {:ok, domain} ->
-        cleanup_socket()
-        deregister()
-        configure_endpoint(domain)
-        register(domain)
-        register_tidewave(domain)
-        Logger.info("dev-mesh: https://#{@route_id}.#{domain}")
-        {:ok, %{domain: domain}}
-
-      :error ->
-        Logger.info("dev-mesh: Caddy not available, using http://localhost:#{@fallback_port}")
-        {:ok, %{domain: nil}}
-    end
-  end
-
-  @impl true
-  def terminate(_reason, %{domain: domain}) when is_binary(domain) do
-    deregister()
-    deregister_tidewave()
-    :ok
-  end
-  def terminate(_, _), do: :ok
-
-  defp configure_endpoint(domain) do
-    config = Application.get_env(@otp_app, @endpoint)
-
-    updated =
-      config
-      |> Keyword.put(:http, ip: {:local, @sock_path}, port: 0)
-      |> Keyword.put(:url, host: "#{@route_id}.#{domain}", scheme: "https", port: 443)
-
-    Application.put_env(@otp_app, @endpoint, updated)
-  end
-
-  defp discover_domain do
-    case Req.get("#{@caddy_admin}/config/apps/tls/", receive_timeout: 2000, retry: false) do
-      {:ok, %{status: 200, body: body}} ->
-        subjects = get_in(body, ["certificates", "automate"]) || []
-        case Enum.find(subjects, &String.starts_with?(&1, "*.")) do
-          "*." <> domain -> {:ok, domain}
-          _ -> :error
-        end
-      _ -> :error
-    end
-  end
-
-  defp cleanup_socket, do: File.rm(@sock_path)
-
-  defp register(domain) do
-    Req.post("#{@caddy_admin}/config/apps/http/servers/srv0/routes",
-      json: %{
-        "@id" => @route_id,
-        "match" => [%{"host" => ["#{@route_id}.#{domain}"]}],
-        "handle" => [%{
-          "handler" => "reverse_proxy",
-          "upstreams" => [%{"dial" => "unix/#{@sock_path}"}]
-        }]
-      }
-    )
-  end
-
-  defp deregister do
-    Req.delete("#{@caddy_admin}/id/#{@route_id}")
-  rescue
-    _ -> :ok
-  end
-
-  defp register_tidewave(domain) do
-    ensure_tidewave_server()
-    deregister_tidewave()
-
-    Req.post("#{@caddy_admin}/config/apps/http/servers/tidewave/routes",
-      json: %{
-        "@id" => @tidewave_route_id,
-        "match" => [%{"host" => ["#{@route_id}.#{domain}"]}],
-        "handle" => [%{
-          "handler" => "reverse_proxy",
-          "headers" => %{
-            "request" => %{"set" => %{"Origin" => ["http://#{@tidewave_upstream}"]}}
-          },
-          "upstreams" => [%{"dial" => @tidewave_upstream}]
-        }]
-      },
-      retry: false
-    )
-  end
-
-  defp ensure_tidewave_server do
-    case Req.get("#{@caddy_admin}/config/apps/http/servers/tidewave", retry: false) do
-      {:ok, %{status: 200, body: body}} when is_map(body) -> :ok
-      _ ->
-        Req.put("#{@caddy_admin}/config/apps/http/servers/tidewave",
-          json: %{"listen" => [":9833"], "routes" => []},
-          retry: false
-        )
-    end
-  end
-
-  defp deregister_tidewave do
-    Req.delete("#{@caddy_admin}/id/#{@tidewave_route_id}", retry: false)
-  rescue
-    _ -> :ok
-  end
-end
-```
-
-#### 3. Add to supervision tree
-
-In `lib/my_app/application.ex`, add `DevProxy` before the Endpoint (dev only):
-
-```elixir
-children =
-  [
-    MyAppWeb.Telemetry,
-    {Phoenix.PubSub, name: MyApp.PubSub}
-  ] ++
-    if(Mix.env() == :dev, do: [MyApp.DevProxy], else: []) ++
-    [MyAppWeb.Endpoint]
-```
-
-#### 4. Configure the endpoint for Tidewave
 
 In the endpoint module, add the Tidewave plug with `allow_remote_access: true` (required when accessed through a proxy), and override session cookies to `SameSite=None; Secure` in dev mode so Tidewave Web can make cross-port requests:
 
@@ -416,11 +313,14 @@ allow_remote_access = true
 allowed_origins = ["https://my-app.dev.yourdomain.com:9833"]
 ```
 
-The integration:
+#### How it works
+
+The `DevMesh` macro generates a GenServer that:
 - Auto-discovers the domain from Caddy's TLS config
-- If Caddy is available: switches endpoint to Unix socket, registers HTTPS route
+- If Caddy is available: switches endpoint to Unix socket, registers HTTPS route, sets endpoint URL for correct WebSocket hostnames
 - If Caddy isn't available: leaves TCP port config alone, app works at `http://localhost:PORT`
 - Registers a Tidewave Web proxy route on port 9833 with Origin header rewriting
+- DELETEs stale routes before registering (handles unclean restarts)
 - Deregisters both routes on clean shutdown
 
 ### Other frameworks
