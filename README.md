@@ -263,7 +263,7 @@ defmodule MyApp.DevProxy do
       {:ok, domain} ->
         cleanup_socket()
         deregister()
-        configure_socket()
+        configure_endpoint(domain)
         register(domain)
         Logger.info("dev-mesh: https://#{@route_id}.#{domain}")
         {:ok, %{domain: domain}}
@@ -281,14 +281,19 @@ defmodule MyApp.DevProxy do
   end
   def terminate(_, _), do: :ok
 
-  defp configure_socket do
+  defp configure_endpoint(domain) do
     config = Application.get_env(@otp_app, @endpoint)
-    updated = Keyword.put(config, :http, ip: {:local, @sock_path}, port: 0)
+
+    updated =
+      config
+      |> Keyword.put(:http, ip: {:local, @sock_path}, port: 0)
+      |> Keyword.put(:url, host: "#{@route_id}.#{domain}", scheme: "https", port: 443)
+
     Application.put_env(@otp_app, @endpoint, updated)
   end
 
   defp discover_domain do
-    case Req.get("#{@caddy_admin}/config/apps/tls/", receive_timeout: 2000) do
+    case Req.get("#{@caddy_admin}/config/apps/tls/", receive_timeout: 2000, retry: false) do
       {:ok, %{status: 200, body: body}} ->
         subjects = get_in(body, ["certificates", "automate"]) || []
         case Enum.find(subjects, &String.starts_with?(&1, "*.")) do
@@ -407,6 +412,9 @@ Ensure `caddy trust` was run. Check that the Cloudflare token has DNS edit permi
 
 **502 Bad Gateway**
 Socket path mismatch. Verify the `dial` path in Caddy matches where your service is listening.
+
+**LiveView/LiveReload WebSocket errors in browser console**
+Phoenix defaults to `url: [host: "localhost"]` in `config.exs`. When running behind Caddy at a different hostname, WebSocket connections fail with a hostname mismatch. The DevProxy must also set the `url` config (host, scheme, port) to match the external Caddy URL — see the `configure_endpoint/1` function above.
 
 **Duplicate routes in Caddy**
 A service that crashes or is killed without deregistering leaves a stale route. If it restarts and POSTs a new route without first DELETEing the old one, you get duplicates. Always DELETE by `@id` before POSTing on startup. Remove a duplicate manually: `curl -s http://localhost:2019/config/apps/http/servers/srv0/routes | python3 -m json.tool` to find the index, then `curl -X DELETE http://localhost:2019/config/apps/http/servers/srv0/routes/{index}`.
