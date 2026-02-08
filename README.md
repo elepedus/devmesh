@@ -129,6 +129,15 @@ sudo chmod 1777 /tmp/caddy-dev
 sudo caddy trust
 ```
 
+Create a secrets file for the Cloudflare token (keeps credentials out of the plist and version control):
+
+```bash
+sudo tee /usr/local/etc/caddy/env > /dev/null <<'EOF'
+export CLOUDFLARE_API_TOKEN=your-token-here
+EOF
+sudo chmod 600 /usr/local/etc/caddy/env
+```
+
 Save to `/Library/LaunchDaemons/com.caddyserver.caddy.plist`:
 
 ```xml
@@ -142,12 +151,10 @@ Save to `/Library/LaunchDaemons/com.caddyserver.caddy.plist`:
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>mkdir -p /tmp/caddy-dev /var/lib/caddy/data /var/lib/caddy/config &amp;&amp; chmod 1777 /tmp/caddy-dev &amp;&amp; exec /usr/local/bin/caddy run --config /usr/local/etc/caddy/config.json --resume</string>
+        <string>. /usr/local/etc/caddy/env &amp;&amp; mkdir -p /tmp/caddy-dev /var/lib/caddy/data /var/lib/caddy/config &amp;&amp; chmod 1777 /tmp/caddy-dev &amp;&amp; exec /usr/local/bin/caddy run --config /usr/local/etc/caddy/config.json --resume</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
-        <key>CLOUDFLARE_API_TOKEN</key>
-        <string>YOUR_TOKEN_HERE</string>
         <key>HOME</key>
         <string>/var/lib/caddy</string>
         <key>XDG_DATA_HOME</key>
@@ -171,6 +178,7 @@ Save to `/Library/LaunchDaemons/com.caddyserver.caddy.plist`:
 ```
 
 Key details:
+- **Secrets file** — The startup script sources `/usr/local/etc/caddy/env` to load the Cloudflare token. This keeps credentials out of the plist (which lives in version control). The file is mode 600 (root-only readable).
 - **`--resume`** — Caddy auto-saves its config (including API-added routes) to disk. On restart, `--resume` restores the last config so dynamically registered services don't lose their routes. The `--config` file is used as fallback on first boot. If you edit the config file, use `caddy reload` instead of a restart to pick up changes.
 - **`HOME`/`XDG_DATA_HOME`/`XDG_CONFIG_HOME`** — required because LaunchDaemons run as root with no `$HOME`. Without these, Caddy fails with "read-only file system" when storing certificates.
 - **Startup script** recreates `/tmp/caddy-dev` on boot (macOS clears `/tmp` on reboot).
