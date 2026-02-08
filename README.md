@@ -234,7 +234,7 @@ This repo includes a `dev_mesh` Elixir package that handles all the Caddy integr
 
 ```elixir
 # mix.exs
-{:dev_mesh, github: "elepedus/dev-mesh", only: :dev},
+{:dev_mesh, github: "elepedus/devmesh", only: :dev},
 {:tidewave, "~> 0.5", only: :dev}
 ```
 
