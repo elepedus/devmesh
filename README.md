@@ -179,11 +179,34 @@ Key details:
 sudo launchctl bootstrap system /Library/LaunchDaemons/com.caddyserver.caddy.plist
 ```
 
-### 5. Verify
+### 5. Install the dashboard
+
+The dashboard provides an always-on status page at `dev-mesh.dev.yourdomain.com` showing registered services, upstream health, and TLS status. It runs as a dedicated unprivileged user.
+
+```bash
+# Create a system user for the dashboard
+sudo dscl . -create /Users/_devmesh UniqueID 399
+sudo dscl . -create /Users/_devmesh PrimaryGroupID 399
+sudo dscl . -create /Users/_devmesh UserShell /usr/bin/false
+sudo dscl . -create /Users/_devmesh NFSHomeDirectory /var/empty
+sudo dscl . -create /Groups/_devmesh PrimaryGroupID 399
+
+# Install the dashboard script
+sudo mkdir -p /usr/local/etc/devmesh
+sudo cp dashboard.py /usr/local/etc/devmesh/dashboard.py
+
+# Install and start the service
+sudo cp com.devmesh.dashboard.plist /Library/LaunchDaemons/com.devmesh.dashboard.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.devmesh.dashboard.plist
+```
+
+### 6. Verify
 
 ```bash
 curl http://localhost:2019/config/ | jq .
 ```
+
+Open `https://dev-mesh.dev.yourdomain.com` to see the dashboard.
 
 ## Framework Integration
 
