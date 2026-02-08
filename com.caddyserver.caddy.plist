@@ -8,7 +8,7 @@
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>mkdir -p /tmp/caddy-dev /var/lib/caddy/data /var/lib/caddy/config &amp;&amp; chmod 1777 /tmp/caddy-dev &amp;&amp; exec /usr/local/bin/caddy run --config /usr/local/etc/caddy/config.json</string>
+        <string>mkdir -p /tmp/caddy-dev /var/lib/caddy/data /var/lib/caddy/config &amp;&amp; chmod 1777 /tmp/caddy-dev &amp;&amp; exec /usr/local/bin/caddy run --config /usr/local/etc/caddy/config.json --resume</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>

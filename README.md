@@ -142,7 +142,7 @@ Save to `/Library/LaunchDaemons/com.caddyserver.caddy.plist`:
     <array>
         <string>/bin/sh</string>
         <string>-c</string>
-        <string>mkdir -p /tmp/caddy-dev /var/lib/caddy/data /var/lib/caddy/config &amp;&amp; chmod 1777 /tmp/caddy-dev &amp;&amp; exec /usr/local/bin/caddy run --config /usr/local/etc/caddy/config.json</string>
+        <string>mkdir -p /tmp/caddy-dev /var/lib/caddy/data /var/lib/caddy/config &amp;&amp; chmod 1777 /tmp/caddy-dev &amp;&amp; exec /usr/local/bin/caddy run --config /usr/local/etc/caddy/config.json --resume</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
@@ -171,6 +171,7 @@ Save to `/Library/LaunchDaemons/com.caddyserver.caddy.plist`:
 ```
 
 Key details:
+- **`--resume`** — Caddy auto-saves its config (including API-added routes) to disk. On restart, `--resume` restores the last config so dynamically registered services don't lose their routes. The `--config` file is used as fallback on first boot. If you edit the config file, use `caddy reload` instead of a restart to pick up changes.
 - **`HOME`/`XDG_DATA_HOME`/`XDG_CONFIG_HOME`** — required because LaunchDaemons run as root with no `$HOME`. Without these, Caddy fails with "read-only file system" when storing certificates.
 - **Startup script** recreates `/tmp/caddy-dev` on boot (macOS clears `/tmp` on reboot).
 - This is a **system daemon** (`/Library/LaunchDaemons`), so it runs at boot regardless of which user is logged in. All users can create sockets in `/tmp/caddy-dev` (sticky bit) and register routes via the admin API.
