@@ -28,7 +28,7 @@ dev-mesh gives each project, branch, and worktree a unique HTTPS URL (`myapp-fea
 Port 3000 assumes you're running one thing at a time. You're not.
 
 - **Worktrees** — run multiple branches simultaneously
-- **Parallel agents** — let AI verify its own work without conflicts  
+- **Parallel agents** — let AI verify its own work without conflicts
 - **Multiple projects** — no more toggling services on and off
 - **Mobile testing** — access any service from your phone, instantly
 
@@ -44,6 +44,8 @@ Port 3000 assumes you're running one thing at a time. You're not.
 
 ### 1. Build Caddy with required modules
 
+Requires Go 1.23+ (older versions have dylib issues with xcaddy on macOS ARM).
+
 ```bash
 go install github.com/caddyserver/xcaddy/cmd/xcaddy@latest
 xcaddy build \
@@ -56,10 +58,12 @@ sudo mv caddy /usr/local/bin/
 ### 2. Configure Cloudflare
 
 Create an API token at [dash.cloudflare.com/profile/api-tokens](https://dash.cloudflare.com/profile/api-tokens):
-- **Permissions:** Zone → DNS → Edit  
+- **Permissions:** Zone → DNS → Edit
 - **Zone Resources:** Include → your domain
 
 Add a wildcard A record: `*.dev.yourdomain.com` → any IP (Caddy will update it)
+
+> **Note:** Only create an A record (IPv4). Do not add an AAAA record — the dynamic DNS module will pick up link-local `fe80::` addresses from your interface, which aren't routable from other devices.
 
 ### 3. Create Caddy config
 
@@ -70,14 +74,14 @@ Save to `/usr/local/etc/caddy/config.json`:
   "admin": {"listen": "localhost:2019"},
   "apps": {
     "dynamic_dns": {
-      "domains": {"yourdomain.com": ["dev"]},
-      "ip_source": {"source": "interface", "name": "en0"},
+      "domains": {"yourdomain.com": ["*.dev"]},
+      "ip_sources": [{"source": "interface", "name": "en0"}],
       "dns_provider": {
         "name": "cloudflare",
         "api_token": "{env.CLOUDFLARE_API_TOKEN}"
       },
       "check_interval": "5m",
-      "versions": {"ipv4": true, "ipv6": true}
+      "versions": {"ipv4": true, "ipv6": false}
     },
     "http": {
       "servers": {
@@ -88,6 +92,9 @@ Save to `/usr/local/etc/caddy/config.json`:
       }
     },
     "tls": {
+      "certificates": {
+        "automate": ["*.dev.yourdomain.com"]
+      },
       "automation": {
         "policies": [{
           "subjects": ["*.dev.yourdomain.com"],
@@ -109,10 +116,15 @@ Save to `/usr/local/etc/caddy/config.json`:
 }
 ```
 
+Key details:
+- **`ip_sources`** (plural, array) — not `ip_source`. The caddy-dynamicdns README may be outdated.
+- **`certificates.automate`** — tells Caddy to pre-provision the wildcard cert on startup. Without this, Caddy issues individual per-subdomain certificates.
+- **`ipv6: false`** — prevents publishing link-local IPv6 addresses that aren't reachable from other devices.
+
 ### 4. Install as system service (macOS)
 
 ```bash
-sudo mkdir -p /usr/local/etc/caddy /var/log/caddy /tmp/caddy-dev
+sudo mkdir -p /usr/local/etc/caddy /var/log/caddy /var/lib/caddy /tmp/caddy-dev
 sudo chmod 1777 /tmp/caddy-dev
 sudo caddy trust
 ```
@@ -128,15 +140,20 @@ Save to `/Library/LaunchDaemons/com.caddyserver.caddy.plist`:
     <string>com.caddyserver.caddy</string>
     <key>ProgramArguments</key>
     <array>
-        <string>/usr/local/bin/caddy</string>
-        <string>run</string>
-        <string>--config</string>
-        <string>/usr/local/etc/caddy/config.json</string>
+        <string>/bin/sh</string>
+        <string>-c</string>
+        <string>mkdir -p /tmp/caddy-dev /var/lib/caddy/data /var/lib/caddy/config &amp;&amp; chmod 1777 /tmp/caddy-dev &amp;&amp; exec /usr/local/bin/caddy run --config /usr/local/etc/caddy/config.json</string>
     </array>
     <key>EnvironmentVariables</key>
     <dict>
         <key>CLOUDFLARE_API_TOKEN</key>
         <string>YOUR_TOKEN_HERE</string>
+        <key>HOME</key>
+        <string>/var/lib/caddy</string>
+        <key>XDG_DATA_HOME</key>
+        <string>/var/lib/caddy/data</string>
+        <key>XDG_CONFIG_HOME</key>
+        <string>/var/lib/caddy/config</string>
     </dict>
     <key>RunAtLoad</key>
     <true/>
@@ -153,8 +170,13 @@ Save to `/Library/LaunchDaemons/com.caddyserver.caddy.plist`:
 </plist>
 ```
 
+Key details:
+- **`HOME`/`XDG_DATA_HOME`/`XDG_CONFIG_HOME`** — required because LaunchDaemons run as root with no `$HOME`. Without these, Caddy fails with "read-only file system" when storing certificates.
+- **Startup script** recreates `/tmp/caddy-dev` on boot (macOS clears `/tmp` on reboot).
+- This is a **system daemon** (`/Library/LaunchDaemons`), so it runs at boot regardless of which user is logged in. All users can create sockets in `/tmp/caddy-dev` (sticky bit) and register routes via the admin API.
+
 ```bash
-sudo launchctl load /Library/LaunchDaemons/com.caddyserver.caddy.plist
+sudo launchctl bootstrap system /Library/LaunchDaemons/com.caddyserver.caddy.plist
 ```
 
 ### 5. Verify
@@ -198,7 +220,7 @@ curl -X POST "http://localhost:2019/config/apps/http/servers/srv0/routes" \
     }]
   }'
 
-# Deregister  
+# Deregister
 curl -X DELETE "http://localhost:2019/id/myapp-feature"
 ```
 
@@ -221,19 +243,28 @@ Subdomains follow `{app}-{branch}` format:
 
 ## Troubleshooting
 
-**EADDRINUSE on port 80/443**  
+**EADDRINUSE on port 80/443**
 Something else is using those ports. Check with `sudo lsof -i :80`.
 
-**DNS not resolving**  
+**"read-only file system" in Caddy logs**
+The `HOME`, `XDG_DATA_HOME`, and `XDG_CONFIG_HOME` environment variables aren't set in the plist. Caddy needs a writable directory for certificate storage.
+
+**DNS not resolving**
 Wait a minute for propagation, then `dig myapp.dev.yourdomain.com`. Check Caddy logs: `tail -f /var/log/caddy/caddy.log`
 
-**TLS certificate errors**  
+**DNS not resolving on mobile**
+Phones may take several minutes to pick up new wildcard records. Try a different subdomain if you suspect caching. Also ensure your phone's DNS isn't filtered by the router (some routers block DNS responses pointing to private IPs as rebinding protection).
+
+**Per-subdomain certs instead of wildcard**
+Add `"certificates": {"automate": ["*.dev.yourdomain.com"]}` to the TLS config. Without this, Caddy issues individual certs for each subdomain it encounters.
+
+**TLS certificate errors**
 Ensure `caddy trust` was run. Check that the Cloudflare token has DNS edit permissions.
 
-**502 Bad Gateway**  
+**502 Bad Gateway**
 Socket path mismatch. Verify the `dial` path in Caddy matches where your service is listening.
 
-**Stale socket**  
+**Stale socket**
 `rm /tmp/caddy-dev/*.sock` — crashed processes can leave these behind.
 
 ## License
