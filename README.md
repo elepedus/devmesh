@@ -220,10 +220,11 @@ Open `https://dev-mesh.dev.yourdomain.com` to see the dashboard.
 
 ### Phoenix/Elixir
 
-Add `req` to `mix.exs` deps:
+Add `req` and `tidewave` to `mix.exs` deps:
 
 ```elixir
-{:req, "~> 0.5"}
+{:req, "~> 0.5"},
+{:tidewave, "~> 0.5", only: [:dev]}
 ```
 
 #### 1. Configure the endpoint
@@ -255,6 +256,8 @@ defmodule MyApp.DevProxy do
   @otp_app :my_app
   @endpoint MyAppWeb.Endpoint
   @fallback_port 4000
+  @tidewave_route_id "tidewave-my-app"
+  @tidewave_upstream "localhost:9832"
 
   def start_link(_opts), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
 
@@ -266,6 +269,7 @@ defmodule MyApp.DevProxy do
         deregister()
         configure_endpoint(domain)
         register(domain)
+        register_tidewave(domain)
         Logger.info("dev-mesh: https://#{@route_id}.#{domain}")
         {:ok, %{domain: domain}}
 
@@ -278,6 +282,7 @@ defmodule MyApp.DevProxy do
   @impl true
   def terminate(_reason, %{domain: domain}) when is_binary(domain) do
     deregister()
+    deregister_tidewave()
     :ok
   end
   def terminate(_, _), do: :ok
@@ -325,6 +330,43 @@ defmodule MyApp.DevProxy do
   rescue
     _ -> :ok
   end
+
+  defp register_tidewave(domain) do
+    ensure_tidewave_server()
+    deregister_tidewave()
+
+    Req.post("#{@caddy_admin}/config/apps/http/servers/tidewave/routes",
+      json: %{
+        "@id" => @tidewave_route_id,
+        "match" => [%{"host" => ["#{@route_id}.#{domain}"]}],
+        "handle" => [%{
+          "handler" => "reverse_proxy",
+          "headers" => %{
+            "request" => %{"set" => %{"Origin" => ["http://#{@tidewave_upstream}"]}}
+          },
+          "upstreams" => [%{"dial" => @tidewave_upstream}]
+        }]
+      },
+      retry: false
+    )
+  end
+
+  defp ensure_tidewave_server do
+    case Req.get("#{@caddy_admin}/config/apps/http/servers/tidewave", retry: false) do
+      {:ok, %{status: 200, body: body}} when is_map(body) -> :ok
+      _ ->
+        Req.put("#{@caddy_admin}/config/apps/http/servers/tidewave",
+          json: %{"listen" => [":9833"], "routes" => []},
+          retry: false
+        )
+    end
+  end
+
+  defp deregister_tidewave do
+    Req.delete("#{@caddy_admin}/id/#{@tidewave_route_id}", retry: false)
+  rescue
+    _ -> :ok
+  end
 end
 ```
 
@@ -342,11 +384,36 @@ children =
     [MyAppWeb.Endpoint]
 ```
 
+#### 4. Configure the endpoint for Tidewave
+
+In the endpoint module, add the Tidewave plug with `allow_remote_access: true` (required when accessed through a proxy), and override session cookies to `SameSite=None; Secure` in dev mode so Tidewave Web can make cross-port requests:
+
+```elixir
+if Code.ensure_loaded?(Tidewave) do
+  plug Tidewave, allow_remote_access: true
+end
+
+if code_reloading? do
+  @session_options Keyword.merge(@session_options, same_site: "None", secure: true)
+  # ... existing LiveReloader/CodeReloader plugs
+end
+```
+
+#### 5. Configure Tidewave Web
+
+In the Tidewave app settings, enable remote access and allow your app origins:
+
+```toml
+allow_remote_access = true
+allowed_origins = ["https://my-app.dev.yourdomain.com:9833"]
+```
+
 The integration:
 - Auto-discovers the domain from Caddy's TLS config
 - If Caddy is available: switches endpoint to Unix socket, registers HTTPS route
 - If Caddy isn't available: leaves TCP port config alone, app works at `http://localhost:PORT`
-- Deregisters on clean shutdown
+- Registers a Tidewave Web proxy route on port 9833 with Origin header rewriting
+- Deregisters both routes on clean shutdown
 
 ### Other frameworks
 
@@ -419,6 +486,9 @@ Phoenix defaults to `url: [host: "localhost"]` in `config.exs`. When running beh
 
 **Duplicate routes in Caddy**
 A service that crashes or is killed without deregistering leaves a stale route. If it restarts and POSTs a new route without first DELETEing the old one, you get duplicates. Always DELETE by `@id` before POSTing on startup. Remove a duplicate manually: `curl -s http://localhost:2019/config/apps/http/servers/srv0/routes | python3 -m json.tool` to find the index, then `curl -X DELETE http://localhost:2019/config/apps/http/servers/srv0/routes/{index}`.
+
+**Tidewave Web not loading through the mesh**
+The DevProxy creates a separate Caddy server on port 9833 that proxies to Tidewave Web (localhost:9832). Check that: (1) Tidewave Web is running, (2) the Tidewave app settings have `allow_remote_access = true` and the correct `allowed_origins`, (3) the tidewave server exists in Caddy: `curl http://localhost:2019/config/apps/http/servers/tidewave | python3 -m json.tool`. Note: Caddy returns `200` with `null` body for missing config paths — the `ensure_tidewave_server` check must verify the body is a map, not just status 200.
 
 **Stale socket**
 `rm /tmp/caddy-dev/*.sock` — crashed processes can leave these behind.
