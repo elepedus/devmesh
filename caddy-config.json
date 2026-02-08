@@ -1,0 +1,44 @@
+{
+  "admin": {"listen": "localhost:2019"},
+  "apps": {
+    "dynamic_dns": {
+      "domains": {"lpds.dev": ["*.a2780"]},
+      "ip_sources": [{"source": "interface", "name": "en0"}],
+      "dns_provider": {
+        "name": "cloudflare",
+        "api_token": "{env.CLOUDFLARE_API_TOKEN}"
+      },
+      "check_interval": "5m",
+      "versions": {"ipv4": true, "ipv6": false}
+    },
+    "http": {
+      "servers": {
+        "srv0": {
+          "listen": [":443", ":80"],
+          "routes": []
+        }
+      }
+    },
+    "tls": {
+      "certificates": {
+        "automate": ["*.a2780.lpds.dev"]
+      },
+      "automation": {
+        "policies": [{
+          "subjects": ["*.a2780.lpds.dev"],
+          "issuers": [{
+            "module": "acme",
+            "challenges": {
+              "dns": {
+                "provider": {
+                  "name": "cloudflare",
+                  "api_token": "{env.CLOUDFLARE_API_TOKEN}"
+                }
+              }
+            }
+          }]
+        }]
+      }
+    }
+  }
+}
