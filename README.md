@@ -432,6 +432,48 @@ This writes to `.mcp.json` in the worktree root. For the main worktree, run this
 
 **`.env`**, **`.id`**, and **`.mcp.json`** should all be gitignored — they're per-worktree.
 
+### Bare repo layout (recommended)
+
+Using a bare repo ensures every working copy is a worktree — there's no special "main" checkout that can block you from creating worktrees for `main`.
+
+```
+myapp/
+├── .git/           # bare repo (no working files)
+├── main/           # worktree: main branch
+├── feature-auth/   # worktree: feature-auth branch
+└── fix-123/        # worktree: fix-123 branch
+```
+
+Configure worktrunk to place worktrees as subdirectories:
+
+```bash
+# ~/.config/worktrunk/config.toml
+worktree-path = "{{ repo_path }}/../{{ branch | sanitize }}"
+```
+
+Set up a new project:
+
+```bash
+git clone --bare git@github.com:you/myapp.git myapp/.git
+cd myapp
+wt switch main        # creates myapp/main/
+wt switch --create feature-auth  # creates myapp/feature-auth/
+```
+
+Migrate an existing clone:
+
+```bash
+mv myapp myapp-old
+mkdir myapp
+mv myapp-old/.git myapp/.git
+cd myapp/.git && git config --bool core.bare true && cd ..
+wt switch main
+# copy any untracked files from myapp-old/main/ as needed
+rm -rf ../myapp-old
+```
+
+All hooks, `.mise.toml`, and `.config/wt.toml` work identically in bare repo worktrees — `primary_worktree_path` points to the `main` worktree for build cache copies.
+
 The flow:
 
 ```
