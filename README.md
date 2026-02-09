@@ -1,8 +1,8 @@
-# dev-mesh
+# devmesh
 
-**Local development service mesh. Every project gets its own URL.**
+**Local development service mesh. Every project gets its own URL. Stop port-hopping.**
 
-dev-mesh gives each project, branch, and worktree a unique HTTPS URL (`myapp-feature.dev.yourdomain.com`) so you can run everything in parallel without port conflicts.
+devmesh gives each project, branch, and worktree a unique HTTPS URL (`myapp-feature.dev.yourdomain.com`) so you can run everything in parallel without port conflicts.
 
 ```
 ┌──────────────────────────────────────────────────────────┐
@@ -190,7 +190,7 @@ sudo launchctl bootstrap system /Library/LaunchDaemons/com.caddyserver.caddy.pli
 
 ### 5. Install the dashboard
 
-The dashboard provides an always-on status page at `dev-mesh.dev.yourdomain.com` showing registered services, upstream health, and TLS status. It runs as a dedicated unprivileged user.
+The dashboard provides an always-on status page at `devmesh.dev.yourdomain.com` showing registered services, upstream health, and TLS status. It runs as a dedicated unprivileged user.
 
 ```bash
 # Create a system user for the dashboard (pick an unused UID/GID —
@@ -222,7 +222,7 @@ sudo launchctl bootstrap system /Library/LaunchDaemons/com.devmesh.dashboard.pli
 curl http://localhost:2019/config/ | jq .
 ```
 
-Open `https://dev-mesh.dev.yourdomain.com` to see the dashboard.
+Open `https://devmesh.dev.yourdomain.com` to see the dashboard.
 
 ## Framework Integration
 
