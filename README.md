@@ -376,6 +376,68 @@ myapp-feature-auth
 
 If no `.id` file exists, the `route_id` from the DevProxy module config is used (backwards compatible).
 
+### Automating with worktrunk + mise
+
+[Worktrunk](https://worktrunk.dev/) manages worktree lifecycle. [mise](https://mise.jdx.dev/) manages toolchains and per-directory environment variables. Together they automate the entire flow.
+
+**`.mise.toml`** (committed) — sets toolchain versions, default env vars, and loads per-worktree overrides:
+
+```toml
+[tools]
+elixir = "1.19"
+erlang = "28"
+node = "24"
+
+[env]
+DATABASE_NAME = "myapp_dev"
+TEST_DATABASE_NAME = "myapp_test"
+_.file = ".env"
+```
+
+**`.config/wt.toml`** (committed) — worktrunk hooks that run when creating/removing worktrees:
+
+```toml
+[post-create]
+setup = """
+echo "myapp-{{ branch | sanitize }}" > .id
+cat > .env << EOF
+DATABASE_NAME=myapp_{{ branch | sanitize_db }}_dev
+TEST_DATABASE_NAME=myapp_{{ branch | sanitize_db }}_test
+EOF
+cp -cR {{ primary_worktree_path }}/_build . 2>/dev/null || true
+cp -cR {{ primary_worktree_path }}/deps . 2>/dev/null || true
+mise trust
+eval "$(mise activate bash)"
+mix deps.get
+mix compile
+createdb myapp_{{ branch | sanitize_db }}_dev --template=myapp_dev 2>/dev/null || true
+mix ecto.migrate 2>/dev/null || true
+"""
+
+[pre-remove]
+cleanup = """
+dropdb myapp_{{ branch | sanitize_db }}_dev --if-exists 2>/dev/null || true
+dropdb myapp_{{ branch | sanitize_db }}_test --if-exists 2>/dev/null || true
+"""
+```
+
+**`.env`** and **`.id`** should both be gitignored. The main worktree uses defaults from `.mise.toml` and the DevProxy `route_id`. Feature worktrees get their own via the hooks.
+
+The flow:
+
+```
+wt switch --create feature-auth
+# hook writes .id (myapp-feature-auth) + .env (DATABASE_NAME=myapp_feature_auth_x7k_dev)
+# CoW-copies _build/deps, compiles, creates database from template
+
+mix phx.server
+# mise loads .env → DATABASE_NAME set
+# devmesh reads .id → https://myapp-feature-auth.dev.yourdomain.com
+
+wt remove feature-auth
+# hook drops per-worktree databases
+```
+
 ## Troubleshooting
 
 **EADDRINUSE on port 80/443**
