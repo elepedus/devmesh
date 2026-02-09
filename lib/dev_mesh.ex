@@ -26,9 +26,26 @@ defmodule DevMesh do
           DevMesh.children(MyApp.DevProxy) ++
           [MyAppWeb.Endpoint]
 
+  ## Identity
+
+  On startup, DevMesh reads a `.id` file from the project root to
+  determine the route identity. If the file doesn't exist, it falls
+  back to the `:route_id` option.
+
+  This supports git worktrees — each worktree gets its own `.id` file
+  (gitignored) so multiple instances of the same app can run
+  simultaneously with unique URLs:
+
+      # main worktree .id
+      my-app
+
+      # feature worktree .id
+      my-app-feature-auth
+
   ## Options
 
-    * `:route_id` - Required. Subdomain identifier (e.g. "my-app").
+    * `:route_id` - Required. Default subdomain identifier, used when
+      no `.id` file is present (e.g. "my-app").
     * `:otp_app` - Required. Your application atom (e.g. :my_app).
     * `:endpoint` - Required. Your Phoenix Endpoint module.
     * `:fallback_port` - Required. TCP port when Caddy is unavailable.
@@ -50,51 +67,57 @@ defmodule DevMesh do
 
       @caddy_admin Keyword.get(opts, :caddy_admin, "http://localhost:2019")
       @sock_dir Keyword.get(opts, :sock_dir, "/tmp/caddy-dev")
-      @sock_path Path.join(@sock_dir, "#{@route_id}.sock")
 
       @tidewave_enabled Keyword.get(opts, :tidewave, true)
-      @tidewave_route_id "tidewave-#{@route_id}"
       @tidewave_upstream Keyword.get(opts, :tidewave_upstream, "localhost:9832")
 
       def start_link(_opts), do: GenServer.start_link(__MODULE__, [], name: __MODULE__)
 
       @impl true
       def init(_) do
+        route_id = DevMesh.resolve_route_id(@route_id)
+        sock_path = Path.join(@sock_dir, "#{route_id}.sock")
+        tidewave_route_id = "tidewave-#{route_id}"
+
         case DevMesh.discover_domain(@caddy_admin) do
           {:ok, domain} ->
-            DevMesh.cleanup_socket(@sock_path)
-            DevMesh.deregister(@caddy_admin, @route_id)
-            DevMesh.configure_endpoint(@otp_app, @endpoint, @sock_path, @route_id, domain)
-            DevMesh.register(@caddy_admin, @route_id, @sock_path, domain)
+            DevMesh.cleanup_socket(sock_path)
+            DevMesh.deregister(@caddy_admin, route_id)
+            DevMesh.configure_endpoint(@otp_app, @endpoint, sock_path, route_id, domain)
+            DevMesh.register(@caddy_admin, route_id, sock_path, domain)
 
             if @tidewave_enabled do
               DevMesh.register_tidewave(
                 @caddy_admin,
-                @tidewave_route_id,
-                @route_id,
+                tidewave_route_id,
+                route_id,
                 @tidewave_upstream,
                 domain
               )
             end
 
-            Logger.info("dev-mesh: https://#{@route_id}.#{domain}")
-            {:ok, %{domain: domain}}
+            Logger.info("dev-mesh: https://#{route_id}.#{domain}")
+
+            {:ok,
+             %{domain: domain, route_id: route_id, tidewave_route_id: tidewave_route_id}}
 
           :error ->
             Logger.info(
               "dev-mesh: Caddy not available, using http://localhost:#{@fallback_port}"
             )
 
-            {:ok, %{domain: nil}}
+            {:ok,
+             %{domain: nil, route_id: route_id, tidewave_route_id: tidewave_route_id}}
         end
       end
 
       @impl true
-      def terminate(_reason, %{domain: domain}) when is_binary(domain) do
-        DevMesh.deregister(@caddy_admin, @route_id)
+      def terminate(_reason, %{domain: domain, route_id: route_id} = state)
+          when is_binary(domain) do
+        DevMesh.deregister(@caddy_admin, route_id)
 
         if @tidewave_enabled do
-          DevMesh.deregister_tidewave(@caddy_admin, @tidewave_route_id)
+          DevMesh.deregister_tidewave(@caddy_admin, state.tidewave_route_id)
         end
 
         :ok
@@ -116,6 +139,18 @@ defmodule DevMesh do
   """
   def children(dev_proxy_module) do
     if Mix.env() == :dev, do: [dev_proxy_module], else: []
+  end
+
+  @doc false
+  def resolve_route_id(default) do
+    case File.read(Path.join(File.cwd!(), ".id")) do
+      {:ok, contents} ->
+        trimmed = String.trim(contents)
+        if trimmed != "", do: trimmed, else: default
+
+      _ ->
+        default
+    end
   end
 
   @doc false

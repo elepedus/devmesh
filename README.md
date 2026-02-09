@@ -254,7 +254,7 @@ Options:
 
 | Option | Required | Default | Description |
 |--------|----------|---------|-------------|
-| `route_id` | yes | | Subdomain identifier (e.g. `"my-app"`) |
+| `route_id` | yes | | Default subdomain identifier, used when no `.id` file is present |
 | `otp_app` | yes | | Application atom (e.g. `:my_app`) |
 | `endpoint` | yes | | Phoenix Endpoint module |
 | `fallback_port` | yes | | TCP port when Caddy is unavailable |
@@ -356,15 +356,25 @@ Bind your service to `/tmp/caddy-dev/{name}.sock` instead of a port. Most framew
 - **Go:** `net.Listen("unix", "/tmp/caddy-dev/myapp.sock")`
 - **Ruby/Puma:** `puma -b unix:///tmp/caddy-dev/myapp.sock`
 
-## Naming convention
+## Worktrees and multiple instances
 
-Subdomains follow `{app}-{branch}` format:
+Each project can have a `.id` file in its root containing the route identity — a single line that becomes the subdomain and socket name. Add `.id` to your `.gitignore` so each worktree can have its own.
 
-| Worktree | Branch | URL |
-|----------|--------|-----|
-| `~/code/myapp` | `main` | `myapp.dev.yourdomain.com` |
-| `~/code/myapp-feature` | `feature-auth` | `myapp-feature-auth.dev.yourdomain.com` |
-| `~/code/myapp-fix` | `fix-123` | `myapp-fix-123.dev.yourdomain.com` |
+```
+# main worktree: ~/code/myapp/.id
+myapp
+
+# feature worktree: ~/code/myapp-feature/.id
+myapp-feature-auth
+```
+
+| Worktree | `.id` contents | URL |
+|----------|---------------|-----|
+| `~/code/myapp` | `myapp` | `myapp.dev.yourdomain.com` |
+| `~/code/myapp-feature` | `myapp-feature-auth` | `myapp-feature-auth.dev.yourdomain.com` |
+| `~/code/myapp-fix` | `myapp-fix-123` | `myapp-fix-123.dev.yourdomain.com` |
+
+If no `.id` file exists, the `route_id` from the DevProxy module config is used (backwards compatible).
 
 ## Troubleshooting
 
