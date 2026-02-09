@@ -361,18 +361,18 @@ Bind your service to `/tmp/caddy-dev/{name}.sock` instead of a port. Most framew
 Each project can have a `.id` file in its root containing the route identity — a single line that becomes the subdomain and socket name. Add `.id` to your `.gitignore` so each worktree can have its own.
 
 ```
-# main worktree: ~/code/myapp/.id
+# main worktree: ~/code/myapp/main/.id
 myapp
 
-# feature worktree: ~/code/myapp-feature/.id
+# feature worktree: ~/code/myapp/feature-auth/.id
 myapp-feature-auth
 ```
 
 | Worktree | `.id` contents | URL |
 |----------|---------------|-----|
-| `~/code/myapp` | `myapp` | `myapp.dev.yourdomain.com` |
-| `~/code/myapp-feature` | `myapp-feature-auth` | `myapp-feature-auth.dev.yourdomain.com` |
-| `~/code/myapp-fix` | `myapp-fix-123` | `myapp-fix-123.dev.yourdomain.com` |
+| `~/code/myapp/main` | `myapp` | `myapp.dev.yourdomain.com` |
+| `~/code/myapp/feature-auth` | `myapp-feature-auth` | `myapp-feature-auth.dev.yourdomain.com` |
+| `~/code/myapp/fix-123` | `myapp-fix-123` | `myapp-fix-123.dev.yourdomain.com` |
 
 If no `.id` file exists, the `route_id` from the DevProxy module config is used (backwards compatible).
 
