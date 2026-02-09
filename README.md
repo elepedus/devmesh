@@ -421,18 +421,28 @@ dropdb myapp_{{ branch | sanitize_db }}_test --if-exists 2>/dev/null || true
 """
 ```
 
-**`.env`** and **`.id`** should both be gitignored. The main worktree uses defaults from `.mise.toml` and the DevProxy `route_id`. Feature worktrees get their own via the hooks.
+The hook also registers [Tidewave](https://github.com/tidewave-elixir/tidewave) as an MCP server for [Claude Code](https://docs.anthropic.com/en/docs/claude-code), so each worktree's Claude session automatically connects to the right Tidewave instance:
+
+```bash
+claude mcp add --transport http --scope project tidewave \
+  "https://myapp-{{ branch | sanitize }}.dev.yourdomain.com/tidewave/mcp"
+```
+
+This writes to `.mcp.json` in the worktree root. For the main worktree, run this once manually with your default route_id.
+
+**`.env`**, **`.id`**, and **`.mcp.json`** should all be gitignored — they're per-worktree.
 
 The flow:
 
 ```
 wt switch --create feature-auth
-# hook writes .id (myapp-feature-auth) + .env (DATABASE_NAME=myapp_feature_auth_x7k_dev)
+# hook writes .id, .env, .mcp.json
 # CoW-copies _build/deps, compiles, creates database from template
 
 mix phx.server
 # mise loads .env → DATABASE_NAME set
 # devmesh reads .id → https://myapp-feature-auth.dev.yourdomain.com
+# Claude Code reads .mcp.json → Tidewave connected
 
 wt remove feature-auth
 # hook drops per-worktree databases

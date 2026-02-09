@@ -42,6 +42,11 @@ defmodule DevMesh do
       # feature worktree .id
       my-app-feature-auth
 
+  Use [worktrunk](https://worktrunk.dev/) to automate `.id` creation
+  along with per-worktree `.env` (via [mise](https://mise.jdx.dev/))
+  and Tidewave MCP registration for Claude Code. See the README for
+  a complete `.config/wt.toml` example.
+
   ## Options
 
     * `:route_id` - Required. Default subdomain identifier, used when
